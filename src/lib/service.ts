@@ -10,7 +10,7 @@ import { seedSeenSessions } from "../core/track-usage.js";
 // plugins/ is excluded because installed_plugins.json and known_marketplaces.json contain
 // absolute installPath/installLocation values that must be per-profile; setupPluginsDir
 // creates a real dir with inner symlinks instead of a wholesale symlink.
-const BASE_SHARED_LINK_SKIP = new Set([".claude.json", "image-cache", "statsig", "plugins"]);
+const BASE_SHARED_LINK_SKIP = new Set([".claude.json", ".credentials.json", "image-cache", "statsig", "plugins"]);
 
 /** Files inside plugins/ that contain absolute paths and must be per-profile */
 const PLUGINS_PATH_FILES = new Set(["known_marketplaces.json", "installed_plugins.json"]);
