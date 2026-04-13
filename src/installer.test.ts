@@ -23,6 +23,16 @@ describe("installer helpers", () => {
     ).toBe("/Users/test/.local/bin");
   });
 
+  it("defaults to ~/.local/bin when it does not yet exist", () => {
+    expect(
+      resolveInstallDir({
+        existingPath: null,
+        homeDir: "/home/testuser",
+        localBinExists: false,
+      }),
+    ).toBe("/home/testuser/.local/bin");
+  });
+
   it("renders a launcher that execs node on dist/index.js", () => {
     const launcher = renderLauncher({
       appDir: "/Users/test/.local/share/clausona",

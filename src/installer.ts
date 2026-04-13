@@ -17,7 +17,7 @@ export function resolveInstallDir({
     return path.join(homeDir, ".local", "bin");
   }
 
-  return "/usr/local/bin";
+  return path.join(homeDir, ".local", "bin");
 }
 
 export function renderLauncher({ appDir, nodeBin = "node" }: { appDir: string; nodeBin?: string }) {
