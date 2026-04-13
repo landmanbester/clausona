@@ -5,7 +5,7 @@ APP_NAME="clausona"
 REPO="larcane97/clausona"
 VERSION="${1:-latest}"
 APP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/clausona"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="$HOME/.local/bin"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -19,13 +19,14 @@ echo ""
 
 # Find Node >= 20
 NODE_BIN=""
-for candidate in $(which -a node 2>/dev/null); do
+while IFS= read -r candidate; do
+  [[ -z "$candidate" ]] && continue
   ver=$("$candidate" -e "console.log(process.versions.node.split('.')[0])" 2>/dev/null || echo "0")
   if [[ "$ver" -ge 20 ]]; then
     NODE_BIN="$candidate"
     break
   fi
-done
+done < <(type -aP node 2>/dev/null)
 
 if [[ -z "$NODE_BIN" ]]; then
   echo -e "  ${RED}✗${RESET} Node.js >= 20 is required but not found."
@@ -87,6 +88,10 @@ fi
 rm -f "$LAUNCHER"
 
 echo -e "  ${GREEN}✓${RESET} Installed: $TARGET_PATH"
+if ! echo ":$PATH:" | grep -q ":$INSTALL_DIR:"; then
+  echo -e "  ${CYAN}!${RESET} $INSTALL_DIR is not on your \$PATH."
+  echo -e "    Add to your shell rc: ${CYAN}export PATH=\"$INSTALL_DIR:\$PATH\"${RESET}"
+fi
 
 SHELL_INIT_LINE='eval "$(clausona shell-init)"'
 RC_FILE=""
