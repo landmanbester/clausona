@@ -38,4 +38,39 @@ describe("paths", () => {
       }),
     ).toMatch(/^Claude Code-credentials-[a-f0-9]{8}$/);
   });
+
+  it("resolves json path for Linux-style primary config", () => {
+    expect(
+      claudeJsonPathForConfigDir({
+        homeDir: "/home/testuser",
+        configDir: "/home/testuser/.claude",
+      }),
+    ).toBe("/home/testuser/.claude.json");
+  });
+
+  it("resolves json path for Linux-style custom config", () => {
+    expect(
+      claudeJsonPathForConfigDir({
+        homeDir: "/home/testuser",
+        configDir: "/home/testuser/.claude-work",
+      }),
+    ).toBe("/home/testuser/.claude-work/.claude.json");
+  });
+
+  it("resolves keychain service for Linux-style primary config", () => {
+    expect(
+      keychainServiceForConfigDir({
+        homeDir: "/home/testuser",
+        configDir: "/home/testuser/.claude",
+      }),
+    ).toBe("Claude Code-credentials");
+  });
+
+  it("resolves keychain service for Linux-style custom config", () => {
+    const result = keychainServiceForConfigDir({
+      homeDir: "/home/testuser",
+      configDir: "/home/testuser/.claude-work",
+    });
+    expect(result).toMatch(/^Claude Code-credentials-[a-f0-9]{8}$/);
+  });
 });
