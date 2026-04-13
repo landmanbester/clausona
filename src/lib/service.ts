@@ -130,14 +130,20 @@ async function runLoginFlow(configDir: string): Promise<boolean> {
   return result.code === 0;
 }
 
-async function checkKeychain(service: string) {
+async function checkKeychain(service: string, configDir?: string) {
   if (process.platform === "darwin") {
     const result = await execCommand("security", ["find-generic-password", "-s", service], { quiet: true });
     return result.code === 0;
   }
   if (process.platform === "linux") {
     const result = await execCommand("secret-tool", ["lookup", "service", service], { quiet: true });
-    return result.code === 0;
+    if (result.code === 0) return true;
+    // Fallback: Claude Code on Linux stores credentials as a plain file
+    if (configDir) {
+      const credPath = path.join(configDir, ".credentials.json");
+      return exists(credPath);
+    }
+    return false;
   }
   return true;
 }
@@ -532,7 +538,7 @@ export async function discoverAccounts(): Promise<DiscoveredAccount[]> {
       configDir: resolvedConfig,
     });
 
-    if (!(await checkKeychain(keychainService))) {
+    if (!(await checkKeychain(keychainService, resolvedConfig))) {
       continue;
     }
 
@@ -675,7 +681,7 @@ export async function getCurrentProfile() {
     name: registry.activeProfile,
     ...profile,
     keychainService,
-    hasKeychain: await checkKeychain(keychainService),
+    hasKeychain: await checkKeychain(keychainService, resolvedConfigDir),
     usage: {
       today: summarizeUsage({ now, period: "today", records }),
       total: summarizeUsage({ now, period: "all", records }),
@@ -730,7 +736,7 @@ export async function doctorProfiles(): Promise<DoctorProfileResult[]> {
       homeDir: homedir(),
       configDir: resolvedDir,
     });
-    if (!(await checkKeychain(keychainService))) {
+    if (!(await checkKeychain(keychainService, resolvedDir))) {
       issues.push({ kind: "missing_keychain", message: `${keychainService} not found in credential store` });
     }
 
@@ -956,7 +962,7 @@ export async function addProfile(options: { name: string; fromPath?: string; mer
   const service = keychainServiceForConfigDir({ homeDir: homedir(), configDir: resolvedDir });
   const jsonPath = path.join(configDir, ".claude.json");
   const existingJson = await parseClaudeJson(jsonPath);
-  const alreadyAuthenticated = existingJson?.oauthAccount?.emailAddress && (await checkKeychain(service));
+  const alreadyAuthenticated = existingJson?.oauthAccount?.emailAddress && (await checkKeychain(service, resolvedDir));
 
   if (!alreadyAuthenticated) {
     const loggedIn = await runLoginFlow(configDir);

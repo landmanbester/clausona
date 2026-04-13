@@ -42,7 +42,79 @@ No re-login. No reinstalling plugins. Just switch and go.
 curl -fsSL https://github.com/larcane97/clausona/releases/latest/download/install.sh | bash
 ```
 
-> **Linux:** Requires Node.js >= 20 (via nvm, nodeenv, or distro package) and `libsecret-tools` for credential detection. On Debian/Ubuntu: `sudo apt install libsecret-tools`. On Fedora: `sudo dnf install libsecret`. For bash users, the shell integration line goes in `~/.bashrc`.
+> **Linux:** Requires Node.js >= 20 (via nvm, nodeenv, or distro package). For bash users, the shell integration line goes in `~/.bashrc`.
+
+### Install from Source
+
+To test the latest changes from a fork or branch before a release is published:
+
+```bash
+git clone https://github.com/landmanbester/clausona.git
+cd clausona
+pnpm install
+pnpm build
+```
+
+Then install the built artifact manually:
+
+```bash
+mkdir -p ~/.local/share/clausona ~/.local/bin
+cp dist/index.js ~/.local/share/clausona/index.js
+
+cat > ~/.local/bin/clausona <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exec node ~/.local/share/clausona/index.js "$@"
+EOF
+chmod +x ~/.local/bin/clausona
+```
+
+Make sure `~/.local/bin` is on your `PATH`. Then add shell integration to your rc file (`~/.zshrc` or `~/.bashrc`):
+
+```bash
+eval "$(clausona shell-init)"
+```
+
+Open a new terminal and run `clausona init` to get started.
+
+### Linux Credential Detection
+
+clausona discovers accounts by checking for credentials in two places (in order):
+
+1. **`secret-tool`** (via `libsecret-tools`) — the system keyring
+2. **`.credentials.json`** — the plain-file credential that Claude Code writes on login
+
+If your credentials are stored in `.credentials.json` (the default for Claude Code on Linux), clausona will find them automatically with no extra setup.
+
+If you prefer to use the system keyring, install `libsecret-tools` and register your credentials manually:
+
+```bash
+# Debian/Ubuntu
+sudo apt install libsecret-tools
+
+# Fedora
+sudo dnf install libsecret
+```
+
+Then store each profile's credential. The **primary** profile (`~/.claude`) uses a fixed service name:
+
+```bash
+secret-tool store --label "Claude Code" service "Claude Code-credentials" <<< "$(cat ~/.claude/.credentials.json)"
+```
+
+**Non-primary** profiles (e.g. `~/.claude-work`) use a hashed service name. Compute it with:
+
+```bash
+node -e "const h = require('crypto').createHash('sha256').update('$HOME/.claude-work').digest('hex').slice(0,8); console.log('Claude Code-credentials-' + h)"
+```
+
+Then store it:
+
+```bash
+secret-tool store --label "Claude Code (work)" service "Claude Code-credentials-<hash>" <<< "$(cat ~/.claude-work/.credentials.json)"
+```
+
+Replace `<hash>` with the output from the command above, and adjust the config dir path as needed for each profile.
 
 ## Quick Start
 
