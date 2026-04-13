@@ -8,27 +8,15 @@ describe("installer helpers", () => {
       resolveInstallDir({
         existingPath: "/Users/test/.local/bin/clausona",
         homeDir: "/Users/test",
-        localBinExists: true,
       }),
     ).toBe("/Users/test/.local/bin");
   });
 
-  it("falls back to ~/.local/bin when available", () => {
-    expect(
-      resolveInstallDir({
-        existingPath: null,
-        homeDir: "/Users/test",
-        localBinExists: true,
-      }),
-    ).toBe("/Users/test/.local/bin");
-  });
-
-  it("defaults to ~/.local/bin when it does not yet exist", () => {
+  it("defaults to ~/.local/bin when no existing install", () => {
     expect(
       resolveInstallDir({
         existingPath: null,
         homeDir: "/home/testuser",
-        localBinExists: false,
       }),
     ).toBe("/home/testuser/.local/bin");
   });

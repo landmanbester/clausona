@@ -3,18 +3,12 @@ import path from "node:path";
 export function resolveInstallDir({
   existingPath,
   homeDir,
-  localBinExists,
 }: {
   existingPath: string | null;
   homeDir: string;
-  localBinExists: boolean;
 }) {
   if (existingPath) {
     return path.dirname(existingPath);
-  }
-
-  if (localBinExists) {
-    return path.join(homeDir, ".local", "bin");
   }
 
   return path.join(homeDir, ".local", "bin");
