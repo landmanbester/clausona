@@ -36,11 +36,13 @@ No re-login. No reinstalling plugins. Just switch and go.
 
 **Requirements:** Node.js >= 20, [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
 
-**Platform:** macOS, zsh
+**Platform:** macOS or Linux; bash or zsh
 
 ```bash
 curl -fsSL https://github.com/larcane97/clausona/releases/latest/download/install.sh | bash
 ```
+
+> **Linux:** Requires Node.js >= 20 (via nvm, nodeenv, or distro package) and `libsecret-tools` for credential detection. On Debian/Ubuntu: `sudo apt install libsecret-tools`. On Fedora: `sudo dnf install libsecret`. For bash users, the shell integration line goes in `~/.bashrc`.
 
 ## Quick Start
 
