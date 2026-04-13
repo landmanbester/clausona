@@ -355,7 +355,7 @@ export async function runCommand(command: string, args: string[]) {
         `${secondary("Account".padEnd(12))}${current.email}`,
         ...(current.orgName ? [`${secondary("Org".padEnd(12))}${current.orgName}`] : []),
         `${secondary("Config".padEnd(12))}${dim(configPath)}`,
-        `${secondary("Keychain".padEnd(12))}${current.keychainService} ${keychainStatus}`,
+        `${secondary("Credential".padEnd(12))}${current.keychainService} ${keychainStatus}`,
         ...(!current.isPrimary ? [`${secondary("Sessions".padEnd(12))}${current.mergeSessions ? "merged" : "separated"}`] : []),
         "",
         `${secondary("Today".padEnd(12))}${styledCost(current.usage.today.cost)}  ${dim(localTimezoneLabel())}`,

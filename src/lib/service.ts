@@ -131,8 +131,15 @@ async function runLoginFlow(configDir: string): Promise<boolean> {
 }
 
 async function checkKeychain(service: string) {
-  const result = await execCommand("security", ["find-generic-password", "-s", service], { quiet: true });
-  return result.code === 0;
+  if (process.platform === "darwin") {
+    const result = await execCommand("security", ["find-generic-password", "-s", service], { quiet: true });
+    return result.code === 0;
+  }
+  if (process.platform === "linux") {
+    const result = await execCommand("secret-tool", ["lookup", "service", service], { quiet: true });
+    return result.code === 0;
+  }
+  return true;
 }
 
 function defaultProfileNameForConfigDir(configDir: string) {
@@ -724,7 +731,7 @@ export async function doctorProfiles(): Promise<DoctorProfileResult[]> {
       configDir: resolvedDir,
     });
     if (!(await checkKeychain(keychainService))) {
-      issues.push({ kind: "missing_keychain", message: `${keychainService} not found in Keychain` });
+      issues.push({ kind: "missing_keychain", message: `${keychainService} not found in credential store` });
     }
 
     const dirEntries = await readdir(profile.configDir, { withFileTypes: true }).catch(() => []);
@@ -1113,7 +1120,7 @@ export async function uninstallClausona() {
   }
 
   // 2. Remove shell integration from rc files
-  const rcFiles = [path.join(home, ".zshrc")];
+  const rcFiles = [path.join(home, ".zshrc"), path.join(home, ".bashrc")];
   for (const rcFile of rcFiles) {
     try {
       const content = await readFile(rcFile, "utf8");
