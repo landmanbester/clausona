@@ -1,0 +1,33 @@
+---
+description: clausona repository rules for AI agents
+alwaysApply: true
+---
+
+# clausona repository rules
+
+Canonical guide: `AGENTS.md` and `src/AGENTS.md`. Read them before editing.
+
+clausona is a Node.js CLI + shell hook that manages multiple Claude Code accounts by
+switching `CLAUDE_CONFIG_DIR` per profile and symlinking shared resources.
+
+## Invariants
+
+- Never share `.claude.json` or `.credentials.json` between profiles.
+- `jobs/` and `teams/` follow `projects/` (shared only when `mergeSessions` is true).
+- Merge local session state into the primary before `setupSharedLinks` replaces it.
+- All JSON writes go through `src/core/store.ts` (atomic); guard shared
+  read-modify-write with `withFileLock`.
+- Shell integration must `unalias claude` and preserve a user-set
+  `CLAUDE_CONFIG_DIR`.
+- Keep `core/doctor.ts` and `core/usage.ts` pure; put IO in `service.ts`.
+- Tests are hermetic (tmpdir, no network, no real user config).
+
+## Workflow
+
+```bash
+pnpm install
+pnpm typecheck && pnpm test && pnpm build
+```
+
+Add a test for every behaviour change. Never commit `dist/` or `node_modules/`. Use
+`type: summary` commit messages that explain why.
