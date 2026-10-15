@@ -57,30 +57,64 @@ clausona fixes both. One command switches the account; everything else carries o
 
 ## Install
 
-### One-line install (packaged release)
+There are two ways to install: run the bundled installer, or place the built files by
+hand. The installer is the easy path and works on macOS and Linux with bash or zsh.
+
+### 1. Run the installer (recommended)
+
+From a clone — this builds and installs in one step:
 
 ```bash
-curl -fsSL https://github.com/larcane97/clausona/releases/latest/download/install.sh | bash
+git clone https://github.com/landmanbester/clausona.git
+cd clausona
+pnpm install
+./install.sh            # uses ./dist if built, otherwise downloads a release
 ```
 
-This downloads a release, installs a launcher to `~/.local/bin/clausona`, and appends
-`eval "$(clausona shell-init)"` to your `~/.zshrc` (or `~/.bashrc`).
+The installer will:
 
-> **Linux:** install Node.js >= 20 first (via `nvm`, `nodeenv`, or your distro package).
-> Bash users get the shell line in `~/.bashrc`.
+- install the CLI bundle to `~/.local/share/clausona/index.js`,
+- write a `clausona` launcher to `~/.local/bin` (or to the directory it is already
+  installed in),
+- append `eval "$(clausona shell-init)"` to your `~/.zshrc` or `~/.bashrc`.
 
-### Install from source (recommended for this fork)
+Open a new terminal and run `clausona init`.
 
-Use this if you want the latest fixes, or you're contributing:
+Once a release is published on the repo, colleagues can install without cloning:
 
 ```bash
-# 1. Clone and build
+curl -fsSL https://raw.githubusercontent.com/landmanbester/clausona/main/install.sh | bash
+```
+
+> If the fork has no release yet, the remote installer will tell you to build from
+> source — use the clone-and-`./install.sh` flow above in that case.
+
+#### Installer options
+
+| Option / environment variable | Effect |
+| --- | --- |
+| `./install.sh --local` | Use the local `./dist` build (run `pnpm build` first) |
+| `./install.sh --remote` | Download a release even when a local build exists |
+| `./install.sh v0.0.4-beta` | Install a specific release tag |
+| `./install.sh --repo <owner/repo>` | Download releases from a different fork |
+| `./install.sh --dir <path>` | Where to put the `clausona` launcher |
+| `./install.sh --no-rc` | Do not modify your shell rc file |
+| `CLAUSONA_URL=<url>` | Download `clausona.js` directly from a URL |
+| `CLAUSONA_SHA256=<hash>` | Verify the downloaded bundle's checksum |
+| `CLAUSONA_APP_DIR` / `CLAUSONA_INSTALL_DIR` | Override install locations |
+
+Run `./install.sh --help` for the full list.
+
+### 2. Install the built bundle manually
+
+If you would rather not run the installer:
+
+```bash
 git clone https://github.com/landmanbester/clausona.git
 cd clausona
 pnpm install
 pnpm build
 
-# 2. Install the built bundle
 mkdir -p ~/.local/share/clausona ~/.local/bin
 cp dist/index.js ~/.local/share/clausona/index.js
 
@@ -90,18 +124,22 @@ set -euo pipefail
 exec node ~/.local/share/clausona/index.js "$@"
 EOF
 chmod +x ~/.local/bin/clausona
-```
 
-Make sure `~/.local/bin` is on your `PATH`, then add the shell integration:
-
-```bash
+# then add the shell integration
 echo 'eval "$(clausona shell-init)"' >> ~/.zshrc   # or ~/.bashrc
 ```
 
-Open a new terminal and run `clausona init`.
+Re-run `cp dist/index.js ~/.local/share/clausona/index.js` after each `pnpm build` to
+update your installed copy.
 
-Re-run the copy step (`cp dist/index.js ~/.local/share/clausona/index.js`) after every
-`pnpm build` to update your installed copy.
+### Platform notes
+
+- **Linux:** install Node.js >= 20 first (via `nvm`, `nodeenv`, or your distro package).
+  Bash users get the shell line in `~/.bashrc`.
+- **Updating:** re-run `./install.sh`, or copy the new `dist/index.js` over
+  `~/.local/share/clausona/index.js`.
+- **No release yet?** `./install.sh --local` always works from a clone; the remote
+  one-liner needs a published release (see [Cutting a release](#cutting-a-release)).
 
 ## Quick start
 
@@ -306,6 +344,9 @@ git push origin v0.0.4-beta
 ```
 
 CI builds, tests, and uploads `clausona.js` plus `install.sh` to the GitHub release.
+After the release is published, the remote installer one-liner in
+[Install](#install) starts working for colleagues, and `./install.sh` can fetch that
+tag instead of using a local build.
 
 ## Contributing
 

@@ -88,6 +88,10 @@ which files to touch for common tasks. High level:
   (symlink health), `registry.ts` (active profile), `shell.ts` (shell integration).
 - `src/tui/` — Ink/React dashboard. UI only; logic belongs in `service.ts`.
 - `src/types.ts` — shared types. Keep `DoctorIssue.kind` unions exhaustive.
+- `install.sh` — the user installer. Installs `dist/index.js` and a launcher, then wires
+  up shell integration. Supports `--local`/`--remote`, `CLAUSONA_*` overrides, and
+  checksum verification. CI (`.github/workflows/ci.yml`) runs on every PR; the release
+  workflow publishes `clausona.js` + `install.sh` on `v*` tags.
 
 ### Data model
 
@@ -126,6 +130,8 @@ inside their config dir.
 | Change what gets shared | `BASE_SHARED_LINK_SKIP` / `sharedLinkSkipSet()` in `service.ts`, README diagram, a tmpdir test |
 | Change shell integration | `core/shell.ts` + `core/shell.test.ts` (assert on emitted strings) |
 | Move usage math | `core/usage.ts` + `core/usage.test.ts` |
+| Change the installer | `install.sh` (keep it bash+zsh, macOS+Linux; test with `bash -n` and `--local --no-rc`), README install section |
+| Change packaging/CI | `.github/workflows/ci.yml`, `.github/workflows/release.yml`, README release steps |
 
 ## Commit & PR conventions
 
