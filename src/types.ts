@@ -52,7 +52,16 @@ export type ProfileListItem = {
 };
 
 export type DoctorIssue = {
-  kind: "missing_json" | "missing_oauth" | "missing_keychain" | "broken_symlink" | "local_override" | "stale_symlink" | "plugins_out_of_sync";
+  kind:
+    | "missing_json"
+    | "missing_oauth"
+    | "missing_keychain"
+    | "broken_symlink"
+    | "local_override"
+    | "stale_symlink"
+    | "missing_shared_link"
+    | "account_mismatch"
+    | "plugins_out_of_sync";
   message: string;
 };
 

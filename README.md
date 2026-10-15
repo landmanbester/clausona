@@ -167,17 +167,29 @@ When you register a new profile, clausona symlinks shared resources from your pr
 
 ```
 ~/.claude-work/            (new profile)
-├── .claude.json           ← own auth credentials (NOT shared)
+├── .claude.json           ← own account metadata (NOT shared)
+├── .credentials.json      ← own OAuth tokens outside macOS (NOT shared)
 ├── projects/              ← own session history (NOT shared by default)
+├── jobs/                  ← own background sessions (follows projects/)
+├── teams/                 ← own team records (follows projects/)
 ├── mcp-servers/  →  ~/.claude/mcp-servers    (symlink to primary)
 ├── plugins/      →  ~/.claude/plugins        (symlink to primary)
 ├── settings.json →  ~/.claude/settings.json  (symlink to primary)
 └── ...
 ```
 
-Only `.claude.json` stays profile-specific. Everything else is shared automatically.
+`.claude.json` and `.credentials.json` stay profile-specific. On Linux and Windows
+Claude Code keeps its OAuth tokens in `.credentials.json`; sharing that file made every
+profile authenticate as the primary, so clausona never links it. If an older profile was
+created before this was fixed, `clausona doctor` reports it and `clausona repair <name>`
+restores the profile's own account from its backup (you may need to run
+`clausona login <name>` afterwards to refresh the token).
 
-**Session separation** is the default: each profile keeps its own `projects/` directory, so `/resume` only shows that profile's conversations. To share session history across profiles, pass `--merge-sessions` when adding or initializing.
+**Session separation** is the default: each profile keeps its own `projects/`, `jobs/`
+and `teams/` directories, so `/resume` and the background-session list only show that
+profile's conversations. To share session history and background sessions across
+profiles, pass `--merge-sessions` when adding or initializing. `jobs/` and `teams/`
+always follow `projects/` so a background session and its transcript stay together.
 
 ### Data Storage
 

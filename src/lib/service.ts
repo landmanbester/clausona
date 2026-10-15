@@ -16,7 +16,7 @@ const BASE_SHARED_LINK_SKIP = new Set([".claude.json", ".credentials.json", "ima
 const PLUGINS_PATH_FILES = new Set(["known_marketplaces.json", "installed_plugins.json"]);
 
 function sharedLinkSkipSet(mergeSessions: boolean): Set<string> {
-  if (!mergeSessions) return new Set([...BASE_SHARED_LINK_SKIP, "projects"]);
+  if (!mergeSessions) return new Set([...BASE_SHARED_LINK_SKIP, "projects", "jobs", "teams"]);
   return BASE_SHARED_LINK_SKIP;
 }
 import { claudeJsonPathForConfigDir, keychainServiceForConfigDir } from "../core/paths.js";
@@ -208,6 +208,73 @@ async function mergeSessionFiles(sourceDir: string, primarySource: string) {
   }
 
   return merged;
+}
+
+/**
+ * Move session-keyed record directories (`jobs/`, `teams/`) into the primary.
+ *
+ * Unlike `projects/`, these hold one self-contained directory per session id and no
+ * index to rebuild, so a merge is a plain per-record move. Records are addressed by the
+ * session id, which makes collisions across accounts effectively impossible; where one
+ * does occur the primary's copy wins rather than being overwritten.
+ */
+async function mergeRecordDirs(sourceDir: string, primarySource: string, kind: "jobs" | "teams") {
+  const src = path.join(sourceDir, kind);
+  const dst = path.join(primarySource, kind);
+
+  const srcStats = await lstat(src).catch(() => null);
+  if (!srcStats || srcStats.isSymbolicLink()) return 0;
+  if (!(await exists(dst))) return 0;
+
+  const entries = await readdir(src, { withFileTypes: true });
+  let merged = 0;
+
+  for (const entry of entries) {
+    // Loose files at this level (e.g. jobs/pins.json) are whole-store state, not
+    // records; merging their contents is out of scope, so the primary's copy stands.
+    if (!entry.isDirectory()) continue;
+
+    const target = path.join(dst, entry.name);
+    if (await exists(target)) continue;
+    try {
+      await cp(path.join(src, entry.name), target, { recursive: true });
+      if (kind === "jobs") await rebaseJobTranscriptPath(target, sourceDir, primarySource);
+      merged++;
+    } catch {
+      // best-effort: backup has the originals
+    }
+  }
+
+  return merged;
+}
+
+/**
+ * A job record stores the absolute path of its transcript, written against the config
+ * dir it was created under. The merged copy is rebased onto the primary so it keeps
+ * resolving once the profile's own `projects/` is replaced by a shared link.
+ */
+async function rebaseJobTranscriptPath(jobDir: string, sourceDir: string, primarySource: string) {
+  const statePath = path.join(jobDir, "state.json");
+  const state = await readJson<Record<string, unknown>>(statePath, {});
+  const recorded = state.linkScanPath;
+  if (typeof recorded !== "string") return;
+
+  const prefix = sourceDir.endsWith(path.sep) ? sourceDir : sourceDir + path.sep;
+  if (!recorded.startsWith(prefix)) return;
+
+  state.linkScanPath = path.join(primarySource, recorded.slice(prefix.length));
+  await writeJson(statePath, state);
+}
+
+/**
+ * Fold a profile's own session state into the primary before `setupSharedLinks`
+ * replaces it with shared links. Without this, a profile that shares sessions but
+ * predates a directory the tool now shares loses the records it created locally.
+ */
+async function mergeSessionState(sourceDir: string, primarySource: string) {
+  await mergeSessionFiles(sourceDir, primarySource);
+  await mergeRecordDirs(sourceDir, primarySource, "jobs");
+  await mergeRecordDirs(sourceDir, primarySource, "teams");
 }
 
 async function setupSharedLinks(profileDir: string, primarySource: string, mergeSessions = false, backupDir?: string) {
@@ -602,7 +669,7 @@ export async function initializeRegistry(options: {
         await cp(account.configDir, backupDir, { recursive: true });
       }
       if (merge) {
-        await mergeSessionFiles(account.configDir, PRIMARY_SOURCE);
+        await mergeSessionState(account.configDir, PRIMARY_SOURCE);
       }
       await setupSharedLinks(account.configDir, PRIMARY_SOURCE, merge, backupDir);
       await mergePluginFiles(path.join(account.configDir, "plugins"), path.join(PRIMARY_SOURCE, "plugins"));
@@ -717,7 +784,8 @@ export async function doctorProfiles(): Promise<DoctorProfileResult[]> {
     return [];
   }
 
-  const primaryEntries = new Set((await readdir(registry.primarySource, { withFileTypes: true })).map((entry) => entry.name));
+  const primaryDirents = await readdir(registry.primarySource, { withFileTypes: true });
+  const primaryEntries = new Set(primaryDirents.map((entry) => entry.name));
   const results: DoctorProfileResult[] = [];
 
   for (const [name, profile] of Object.entries(registry.profiles)) {
@@ -729,6 +797,16 @@ export async function doctorProfiles(): Promise<DoctorProfileResult[]> {
       issues.push({ kind: "missing_json", message: ".claude.json is missing" });
     } else if (!claudeJson.oauthAccount?.emailAddress) {
       issues.push({ kind: "missing_oauth", message: ".claude.json is missing oauthAccount.emailAddress" });
+    } else if (!profile.isPrimary && profile.email && claudeJson.oauthAccount.emailAddress !== profile.email) {
+      // On Linux and Windows Claude Code stores OAuth tokens in
+      // $CLAUDE_CONFIG_DIR/.credentials.json. When that file was shared, the profile
+      // authenticated as the primary and Claude Code rewrote its .claude.json with the
+      // primary's account while /status still looked per-profile. Detect it here so
+      // repair can restore the profile's own account.
+      issues.push({
+        kind: "account_mismatch",
+        message: `.claude.json is signed in as ${claudeJson.oauthAccount.emailAddress}, expected ${profile.email} — run 'clausona repair ${name}'`,
+      });
     }
 
     const resolvedDir = await realpath(profile.configDir).catch(() => profile.configDir);
@@ -776,10 +854,24 @@ export async function doctorProfiles(): Promise<DoctorProfileResult[]> {
       });
     }
 
+    // The loop above can only see what the profile already has, so a directory the
+    // primary gained after this profile was set up is invisible to it — the case that
+    // left `jobs/` and `teams/` per-account. Walk the primary as well.
+    const missingSharedDirs: string[] = [];
+    if (!profile.isPrimary) {
+      for (const entry of primaryDirents) {
+        if (!entry.isDirectory()) continue;
+        if (skipSet.has(entry.name)) continue;
+        if (await exists(path.join(profile.configDir, entry.name))) continue;
+        missingSharedDirs.push(entry.name);
+      }
+    }
+
     issues.push(
       ...evaluateSymlinkHealth({
         isPrimary: Boolean(profile.isPrimary),
         items: symlinkItems,
+        missingSharedDirs,
       }),
     );
 
@@ -829,6 +921,54 @@ export async function doctorProfiles(): Promise<DoctorProfileResult[]> {
   return results;
 }
 
+async function restoreProfileAccount(profile: { configDir: string; email: string }, backupDir: string) {
+  const jsonPath = claudeJsonPathForConfigDir({ homeDir: homedir(), configDir: profile.configDir });
+  const current = await parseClaudeJson(jsonPath);
+  const backupJsonPath = path.join(backupDir, ".claude.json");
+  const backup = await parseClaudeJson(backupJsonPath);
+
+  // Only heal when the backup unambiguously holds the account the registry expects
+  // and the profile currently points at a different one. Anything else is left for a
+  // human decision (or a fresh `clausona login`).
+  if (!profile.email || !backup?.oauthAccount?.emailAddress) return false;
+  if (backup.oauthAccount.emailAddress !== profile.email) return false;
+  if (current?.oauthAccount?.emailAddress === profile.email) return false;
+
+  // Swap only the identity fields, keeping the profile's current project state. The
+  // whole file may have moved on since the backup was taken, but the account metadata
+  // was clobbered by the shared credential and must come from the backup.
+  const currentRaw = await readJson<Record<string, unknown>>(jsonPath, {});
+  const backupRaw = await readJson<Record<string, unknown>>(backupJsonPath, {});
+  for (const key of ["oauthAccount", "userID"] as const) {
+    if (backupRaw[key] !== undefined) currentRaw[key] = backupRaw[key];
+  }
+  await writeJson(jsonPath, currentRaw);
+
+  // Only put the backup credential back if it can still be used; a stale one would
+  // make Claude Code fail with "session expired" instead of asking for a fresh
+  // sign-in. A contaminated credential is removed either way so it cannot keep
+  // authenticating as the other account.
+  const credentialTarget = path.join(profile.configDir, ".credentials.json");
+  const credentialBackup = path.join(backupDir, ".credentials.json");
+  const targetStats = await lstat(credentialTarget).catch(() => null);
+  if (targetStats?.isSymbolicLink()) await rm(credentialTarget);
+
+  let restoredCredential = false;
+  if (await exists(credentialBackup)) {
+    const backupCredential = await readJson<{ claudeAiOauth?: { expiresAt?: number } }>(credentialBackup, {});
+    const expiresAt = backupCredential.claudeAiOauth?.expiresAt;
+    if (typeof expiresAt === "number" && expiresAt > Date.now()) {
+      await cp(credentialBackup, credentialTarget);
+      restoredCredential = true;
+    }
+  }
+  if (!restoredCredential) {
+    await rm(credentialTarget, { force: true });
+  }
+
+  return true;
+}
+
 export async function repairProfile(name: string) {
   const registry = await loadRegistry();
   if (!registry || !registry.profiles[name]) {
@@ -841,13 +981,27 @@ export async function repairProfile(name: string) {
   }
 
   const backupDir = path.join(CLAUSONA_DIR, "backups", name);
-  const repaired = await setupSharedLinks(profile.configDir, registry.primarySource, profile.mergeSessions ?? false, backupDir);
+  const mergeSessions = profile.mergeSessions ?? false;
+
+  // Fold the profile's own session state into the primary before setupSharedLinks
+  // replaces it with shared links, or the records it created locally are lost.
+  if (mergeSessions) {
+    await mergeSessionState(profile.configDir, registry.primarySource);
+  }
+
+  // Heal an account overwritten by the old credential-sharing bug: the profile's
+  // .claude.json points at another account while the backup taken at profile
+  // creation still holds the right one. Without this, `use` keeps authenticating as
+  // whatever account last wrote the shared credential file.
+  await restoreProfileAccount(profile, backupDir);
+
+  const repaired = await setupSharedLinks(profile.configDir, registry.primarySource, mergeSessions, backupDir);
   await setupPluginsDir(profile.configDir, registry.primarySource);
 
   // Restore skip-set items from backup if they were stale symlinks that got removed
   // Skip if the backup item is a symlink pointing to primary (stale)
   if (await exists(backupDir)) {
-    const skipSet = sharedLinkSkipSet(profile.mergeSessions ?? false);
+    const skipSet = sharedLinkSkipSet(mergeSessions);
     for (const itemName of skipSet) {
       const target = path.join(profile.configDir, itemName);
       const backupItem = path.join(backupDir, itemName);
@@ -881,7 +1035,7 @@ export async function updateProfileConfig(name: string, options: { mergeSessions
 
   // separated → merged: merge session files before symlinking
   if (next) {
-    await mergeSessionFiles(profile.configDir, registry.primarySource);
+    await mergeSessionState(profile.configDir, registry.primarySource);
   }
 
   profile.mergeSessions = next;
@@ -938,7 +1092,7 @@ export async function addProfile(options: { name: string; fromPath?: string; mer
     await cp(configDir, backupDir, { recursive: true });
     const mergeSessions = options.mergeSessions ?? false;
     if (mergeSessions) {
-      await mergeSessionFiles(configDir, registry.primarySource);
+      await mergeSessionState(configDir, registry.primarySource);
     }
     await setupSharedLinks(configDir, registry.primarySource, mergeSessions, backupDir);
     await mergePluginFiles(path.join(configDir, "plugins"), path.join(registry.primarySource, "plugins"));
@@ -1020,12 +1174,22 @@ export async function loginProfile(name: string) {
     throw new Error(`Profile '${name}' not found.`);
   }
 
-  const loggedIn = await runLoginFlow(registry.profiles[name].configDir);
+  const profile = registry.profiles[name];
+  const loggedIn = await runLoginFlow(profile.configDir);
   if (!loggedIn) {
     throw new Error("Claude login failed.");
   }
 
-  return registry.profiles[name];
+  // The sign-in can be a different account than the one the registry recorded, so
+  // refresh the stored identity from the config Claude Code just wrote.
+  const claudeJson = await parseClaudeJson(claudeJsonPathForConfigDir({ homeDir: homedir(), configDir: profile.configDir }));
+  if (claudeJson?.oauthAccount?.emailAddress) {
+    profile.email = claudeJson.oauthAccount.emailAddress;
+    profile.orgName = claudeJson.oauthAccount.organizationName;
+    await saveRegistry(registry);
+  }
+
+  return profile;
 }
 
 async function cleanupProfile(name: string, profile: { configDir: string; isPrimary?: boolean }) {
