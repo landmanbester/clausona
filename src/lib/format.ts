@@ -1,5 +1,5 @@
 import { symbol } from "../tui/theme.js";
-import type { DoctorProfileResult, ProfileListItem, UsageSummary } from "../types.js";
+import type { DoctorIssue, DoctorProfileResult, ProfileListItem, UsageSummary } from "../types.js";
 
 import { accent, bold, dim, dimmer, green, heading, ok, padEnd as pad, red, secondary, styledCost, styledCount, fail as xMark } from "./cli-style.js";
 
@@ -115,10 +115,22 @@ export function renderDoctor(results: DoctorProfileResult[]) {
       return `    ${dim(connector + symbol.lineH)} ${issue.message}`;
     });
 
-    // Add repair suggestion for the last issue
-    const suggestion = `       ${dim(`Run ${accent("clausona repair " + result.name)} to fix`)}`;
+    // Point at the command that can actually resolve each class of issue.
+    const kinds = new Set(result.issues.map((issue) => issue.kind));
+    const suggestions: string[] = [];
+    if (
+      ["broken_symlink", "local_override", "stale_symlink", "missing_shared_link", "plugins_out_of_sync", "account_mismatch"].some(
+        (kind) => kinds.has(kind as DoctorIssue["kind"]),
+      )
+    ) {
+      suggestions.push(`Run ${accent("clausona repair " + result.name)} to fix shared links`);
+    }
+    if (["missing_keychain", "missing_json", "missing_oauth"].some((kind) => kinds.has(kind as DoctorIssue["kind"]))) {
+      suggestions.push(`Run ${accent("clausona login " + result.name)} to sign in`);
+    }
+    const suggestionLines = suggestions.map((line) => `       ${dim(line)}`);
 
-    return [title, statusLine, ...issueLines, suggestion].join("\n");
+    return [title, statusLine, ...issueLines, ...suggestionLines].join("\n");
   });
 
   return ["", ...sections, ""].join("\n\n");
