@@ -1,5 +1,7 @@
 import { render } from "ink";
 import { spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 import { runCommand } from "./commands.js";
 import { trackUsage } from "./core/track-usage.js";
@@ -109,9 +111,16 @@ async function main() {
   }
 }
 
-import { realpathSync } from "node:fs";
-
-const entryReal = realpathSync(process.argv[1]!);
-if (import.meta.url === `file://${entryReal}`) {
-  void main();
+// Only start the CLI when this module is the process entry point. `process.argv[1]`
+// is undefined when the bundle is imported (tests, `node -e`), so guard it rather
+// than letting realpathSync throw at import time.
+const entry = process.argv[1];
+if (entry) {
+  try {
+    if (import.meta.url === pathToFileURL(realpathSync(entry)).href) {
+      void main();
+    }
+  } catch {
+    // Not a resolvable entry path — leave the bundle importable.
+  }
 }

@@ -1,27 +1,26 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { realpath } from "node:fs/promises";
 
 import { claudeJsonPathForConfigDir } from "./paths.js";
+import { readJson, withFileLock, writeJson } from "./store.js";
 import type { Registry, UsageStore } from "../types.js";
 
 const CLAUSONA_DIR = path.join(homedir(), ".clausona");
 const REGISTRY_PATH = path.join(CLAUSONA_DIR, "profiles.json");
 const USAGE_PATH = path.join(CLAUSONA_DIR, "usage.json");
 
-async function readJson<T>(targetPath: string, fallback: T): Promise<T> {
-  try {
-    const raw = await readFile(targetPath, "utf8");
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
+async function claudeJsonPathForProfile(configDir: string): Promise<string> {
+  const home = homedir();
+  const defaultClaude = await realpath(path.join(home, ".claude")).catch(() => path.join(home, ".claude"));
+  const resolved = await realpath(configDir).catch(() => configDir);
+  const dir = resolved === defaultClaude ? path.join(home, ".claude") : configDir;
+  return claudeJsonPathForConfigDir({ homeDir: home, configDir: dir });
 }
 
-async function writeJson(targetPath: string, value: unknown) {
-  await mkdir(path.dirname(targetPath), { recursive: true });
-  await writeFile(targetPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+async function projectsFromConfig(configDir: string) {
+  const cdata = await readJson<Record<string, unknown>>(await claudeJsonPathForProfile(configDir), {});
+  return cdata.projects as Record<string, Record<string, unknown>> | undefined;
 }
 
 /**
@@ -40,31 +39,8 @@ export async function trackUsage(profileName?: string): Promise<void> {
   const configDir = profile.configDir;
   if (!configDir) return;
 
-  // Determine .claude.json path
-  const home = homedir();
-  const defaultClaude = await realpath(path.join(home, ".claude")).catch(() => path.join(home, ".claude"));
-  const resolved = await realpath(configDir).catch(() => configDir);
-
-  const cjsonPath =
-    resolved === defaultClaude
-      ? claudeJsonPathForConfigDir({ homeDir: home, configDir: path.join(home, ".claude") })
-      : claudeJsonPathForConfigDir({ homeDir: home, configDir });
-
-  const cdata = await readJson<Record<string, unknown>>(cjsonPath, {});
-  const projects = cdata.projects as Record<string, Record<string, unknown>> | undefined;
+  const projects = await projectsFromConfig(configDir);
   if (!projects) return;
-
-  const usage = await readJson<UsageStore>(USAGE_PATH, {});
-
-  if (!usage[name]) {
-    usage[name] = { records: [], seenSessions: {} };
-  }
-
-  const prof = usage[name];
-  if (!prof.seenSessions) {
-    prof.seenSessions = {};
-  }
-  const seen = prof.seenSessions;
 
   const now = new Date();
   const tz = getTimezoneOffset(now);
@@ -72,33 +48,49 @@ export async function trackUsage(profileName?: string): Promise<void> {
   const pad = (n: number) => String(n).padStart(2, "0");
   const ts = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${tz}`;
 
-  let changed = false;
+  // Serialise the read-modify-write so two sessions finishing at once cannot drop
+  // each other's records.
+  await withFileLock(USAGE_PATH, async () => {
+    const usage = await readJson<UsageStore>(USAGE_PATH, {});
 
-  for (const [projPath, projData] of Object.entries(projects)) {
-    if (!projData || typeof projData !== "object") continue;
+    if (!usage[name]) {
+      usage[name] = { records: [], seenSessions: {} };
+    }
 
-    const fp = buildFingerprint(projData);
-    if (!fp) continue;
-    if (seen[projPath] === fp) continue;
+    const prof = usage[name];
+    if (!prof.seenSessions) {
+      prof.seenSessions = {};
+    }
+    const seen = prof.seenSessions;
 
-    const cost = (projData.lastCost as number) ?? 0;
-    const inputTokens = (projData.lastTotalInputTokens as number) ?? 0;
-    const outputTokens = (projData.lastTotalOutputTokens as number) ?? 0;
+    let changed = false;
 
-    seen[projPath] = fp;
-    prof.records.push({
-      ts,
-      tz,
-      cost: Math.round(cost * 1e6) / 1e6,
-      inputTokens,
-      outputTokens,
-    });
-    changed = true;
-  }
+    for (const [projPath, projData] of Object.entries(projects)) {
+      if (!projData || typeof projData !== "object") continue;
 
-  if (changed) {
-    await writeJson(USAGE_PATH, usage);
-  }
+      const fp = buildFingerprint(projData);
+      if (!fp) continue;
+      if (seen[projPath] === fp) continue;
+
+      const cost = (projData.lastCost as number) ?? 0;
+      const inputTokens = (projData.lastTotalInputTokens as number) ?? 0;
+      const outputTokens = (projData.lastTotalOutputTokens as number) ?? 0;
+
+      seen[projPath] = fp;
+      prof.records.push({
+        ts,
+        tz,
+        cost: Math.round(cost * 1e6) / 1e6,
+        inputTokens,
+        outputTokens,
+      });
+      changed = true;
+    }
+
+    if (changed) {
+      await writeJson(USAGE_PATH, usage);
+    }
+  });
 }
 
 function buildFingerprint(projData: Record<string, unknown>): string | null {
@@ -116,37 +108,29 @@ function buildFingerprint(projData: Record<string, unknown>): string | null {
  * is not recorded when tracking starts. Call this when initializing or adding a profile.
  */
 export async function seedSeenSessions(profileName: string, configDir: string): Promise<void> {
-  const home = homedir();
-  const defaultClaude = await realpath(path.join(home, ".claude")).catch(() => path.join(home, ".claude"));
-  const resolved = await realpath(configDir).catch(() => configDir);
-
-  const cjsonPath =
-    resolved === defaultClaude
-      ? claudeJsonPathForConfigDir({ homeDir: home, configDir: path.join(home, ".claude") })
-      : claudeJsonPathForConfigDir({ homeDir: home, configDir });
-
-  const cdata = await readJson<Record<string, unknown>>(cjsonPath, {});
-  const projects = cdata.projects as Record<string, Record<string, unknown>> | undefined;
+  const projects = await projectsFromConfig(configDir);
   if (!projects) return;
 
-  const usage = await readJson<UsageStore>(USAGE_PATH, {});
-  if (!usage[profileName]) {
-    usage[profileName] = { records: [], seenSessions: {} };
-  }
-  const seen = usage[profileName].seenSessions ??= {};
+  await withFileLock(USAGE_PATH, async () => {
+    const usage = await readJson<UsageStore>(USAGE_PATH, {});
+    if (!usage[profileName]) {
+      usage[profileName] = { records: [], seenSessions: {} };
+    }
+    const seen = (usage[profileName].seenSessions ??= {});
 
-  let changed = false;
-  for (const [projPath, projData] of Object.entries(projects)) {
-    if (!projData || typeof projData !== "object") continue;
-    const fp = buildFingerprint(projData);
-    if (!fp || seen[projPath]) continue;
-    seen[projPath] = fp;
-    changed = true;
-  }
+    let changed = false;
+    for (const [projPath, projData] of Object.entries(projects)) {
+      if (!projData || typeof projData !== "object") continue;
+      const fp = buildFingerprint(projData);
+      if (!fp || seen[projPath]) continue;
+      seen[projPath] = fp;
+      changed = true;
+    }
 
-  if (changed) {
-    await writeJson(USAGE_PATH, usage);
-  }
+    if (changed) {
+      await writeJson(USAGE_PATH, usage);
+    }
+  });
 }
 
 function getTimezoneOffset(date: Date): string {

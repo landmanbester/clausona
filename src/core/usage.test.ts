@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { summarizeUsage } from "./usage.js";
+import { summarizeUsage, summarizeUsagePeriods } from "./usage.js";
 
 describe("usage", () => {
   it("aggregates records for the requested period using local time", () => {
@@ -113,5 +113,20 @@ describe("usage", () => {
     });
 
     expect(summary).toEqual({ cost: 3, inputTokens: 30, outputTokens: 15 });
+  });
+
+  it("period summary matches the single-period function for every period", () => {
+    const now = new Date();
+    now.setHours(12, 0, 0, 0);
+    const records = [
+      { ts: now.toISOString(), tz: "+00:00", cost: 1, inputTokens: 10, outputTokens: 5 },
+      { ts: "2026-01-01T08:00:00Z", tz: "+00:00", cost: 2, inputTokens: 20, outputTokens: 10 },
+    ];
+
+    const totals = summarizeUsagePeriods({ now: now.toISOString(), records });
+
+    for (const period of ["today", "week", "month", "all"] as const) {
+      expect(totals[period]).toEqual(summarizeUsage({ now: now.toISOString(), period, records }));
+    }
   });
 });

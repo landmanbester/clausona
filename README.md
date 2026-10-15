@@ -150,8 +150,8 @@ clausona             # open the interactive dashboard
 
 A `claude()` shell wrapper is registered via `eval "$(clausona shell-init)"`:
 
-1. **Before** each `claude` invocation — reads `~/.clausona/profiles.json` and sets `CLAUDE_CONFIG_DIR` to the active profile's config directory
-2. **After** each `claude` invocation — detects usage changes via fingerprint comparison and records cost/token usage per profile
+1. **Before** each `claude` invocation — reads `~/.clausona/active-config` (a tiny, pre-resolved copy of the active profile's config dir, kept in sync by `use`) and sets `CLAUDE_CONFIG_DIR`. If that file is missing it falls back to parsing `profiles.json`. Either way, launching `claude` no longer pays a Node startup just to pick a profile.
+2. **After** each `claude` invocation — detects usage changes via fingerprint comparison and records cost/token usage per profile, under a lock so concurrent sessions cannot drop each other's records. A `CLAUDE_CONFIG_DIR` that you exported yourself is left untouched.
 
 ```
 clausona use work
@@ -198,6 +198,7 @@ All data stays local on your machine.
 ```
 ~/.clausona/
 ├── profiles.json    # registered profiles and active selection
+├── active-config    # pre-resolved config dir for the claude shell wrapper
 ├── usage.json       # per-profile usage history
 └── backups/         # backups of imported profile directories
 

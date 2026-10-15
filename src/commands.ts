@@ -1,6 +1,8 @@
 import path from "node:path";
 import { createInterface } from "node:readline";
 
+import pkg from "../package.json" with { type: "json" };
+
 import {
   addProfile,
   discoverAccounts,
@@ -329,7 +331,7 @@ export async function runCommand(command: string, args: string[]) {
     case "version":
     case "-v":
     case "--version":
-      return `  ${accent("clausona")} ${dim("v0.1.0")}`;
+      return `  ${accent("clausona")} ${dim(`v${pkg.version}`)}`;
 
     case "shell-init":
       return shellInit();
@@ -375,7 +377,11 @@ export async function runCommand(command: string, args: string[]) {
     case "usage": {
       const [name] = args.filter((arg) => !arg.startsWith("--"));
       const periodArg = args.find((arg) => arg.startsWith("--period="));
-      const period = (periodArg?.split("=")[1] as "today" | "week" | "month" | "all" | undefined) ?? "today";
+      const requestedPeriod = periodArg?.split("=")[1] ?? "today";
+      if (!["today", "week", "month", "all"].includes(requestedPeriod)) {
+        throw new Error(`Unknown period: ${requestedPeriod}\nValid periods: today, week, month, all`);
+      }
+      const period = requestedPeriod as "today" | "week" | "month" | "all";
       const summary = await getUsageSummary(name ?? null, period);
       if (!summary) return success(dim("No usage data found."));
       if (jsonFlag(args)) return JSON.stringify(summary, null, 2);

@@ -24,6 +24,47 @@ function cutoffForPeriod(now: Date, period: UsagePeriod): Date | null {
   return cutoff;
 }
 
+/**
+ * Single pass over `records` that produces every period at once. `list` needs
+ * today/week/month/all, and the naive version re-scanned the whole history four
+ * times per profile.
+ */
+export function summarizeUsagePeriods({
+  now,
+  records,
+}: {
+  now: string;
+  records: UsageRecord[];
+}): Record<UsagePeriod, UsageSummary> {
+  const nowDate = new Date(now);
+  const cutoffs: Array<[UsagePeriod, Date | null]> = [
+    ["all", null],
+    ["today", cutoffForPeriod(nowDate, "today")],
+    ["week", cutoffForPeriod(nowDate, "week")],
+    ["month", cutoffForPeriod(nowDate, "month")],
+  ];
+
+  const totals: Record<UsagePeriod, UsageSummary> = {
+    today: { cost: 0, inputTokens: 0, outputTokens: 0 },
+    week: { cost: 0, inputTokens: 0, outputTokens: 0 },
+    month: { cost: 0, inputTokens: 0, outputTokens: 0 },
+    all: { cost: 0, inputTokens: 0, outputTokens: 0 },
+  };
+
+  for (const record of records) {
+    const ts = new Date(record.ts);
+    for (const [period, cutoff] of cutoffs) {
+      if (cutoff && ts < cutoff) continue;
+      const total = totals[period];
+      total.cost += record.cost;
+      total.inputTokens += record.inputTokens;
+      total.outputTokens += record.outputTokens;
+    }
+  }
+
+  return totals;
+}
+
 export function summarizeUsage({
   now,
   period,

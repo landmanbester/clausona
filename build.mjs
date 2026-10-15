@@ -1,6 +1,6 @@
 import { build } from "esbuild";
 import path from "node:path";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, chmodSync } from "node:fs";
 
 // Stub out react-devtools-core — ink imports it but it's unnecessary for CLI
 const stubDir = "node_modules/.clausona-stubs";
@@ -29,3 +29,6 @@ await build({
     "react-devtools-core": `./${stubDir}/react-devtools-core.js`,
   },
 });
+
+// The banner has a shebang; make the artefact directly runnable too.
+chmodSync("dist/index.js", 0o755);

@@ -1,9 +1,10 @@
-import { cp, lstat, mkdir, readFile, readdir, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, readdir, readlink, realpath, rm, symlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
 import { evaluateSymlinkHealth } from "../core/doctor.js";
+import { atomicWrite, exists, readJson, withFileLock, writeJson, writeJsonIfChanged } from "../core/store.js";
 import { seedSeenSessions } from "../core/track-usage.js";
 
 /** Items that should never be shared via symlink between profiles */
@@ -22,7 +23,7 @@ function sharedLinkSkipSet(mergeSessions: boolean): Set<string> {
 import { claudeJsonPathForConfigDir, keychainServiceForConfigDir } from "../core/paths.js";
 import { setActiveProfile } from "../core/registry.js";
 import { renderShellInit } from "../core/shell.js";
-import { summarizeUsage } from "../core/usage.js";
+import { summarizeUsage, summarizeUsagePeriods } from "../core/usage.js";
 import type {
   DiscoveredAccount,
   DoctorIssue,
@@ -37,6 +38,10 @@ const CLAUSONA_DIR = path.join(homedir(), ".clausona");
 const REGISTRY_PATH = path.join(CLAUSONA_DIR, "profiles.json");
 const USAGE_PATH = path.join(CLAUSONA_DIR, "usage.json");
 const PRIMARY_SOURCE = path.join(homedir(), ".claude");
+// A tiny, pre-resolved copy of the active profile's config dir. The `claude` shell
+// wrapper reads it with `cat`, so switching a profile no longer pays a full Node
+// startup on every launch. profiles.json stays the source of truth.
+const ACTIVE_CONFIG_PATH = path.join(CLAUSONA_DIR, "active-config");
 
 type ClaudeJson = {
   oauthAccount?: {
@@ -48,29 +53,6 @@ type ClaudeJson = {
   lastTotalInputTokens?: number;
   lastTotalOutputTokens?: number;
 };
-
-async function exists(targetPath: string) {
-  try {
-    await lstat(targetPath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function readJson<T>(targetPath: string, fallback: T): Promise<T> {
-  try {
-    const raw = await readFile(targetPath, "utf8");
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-async function writeJson(targetPath: string, value: unknown) {
-  await mkdir(path.dirname(targetPath), { recursive: true });
-  await writeFile(targetPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
 
 async function parseClaudeJson(jsonPath: string): Promise<ClaudeJson | null> {
   if (!(await exists(jsonPath))) {
@@ -86,11 +68,22 @@ async function execCommand(
   options?: { env?: NodeJS.ProcessEnv; quiet?: boolean; interactive?: boolean },
 ) {
   return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+    // `spawn` emits 'error' (ENOENT, EACCES, …) instead of 'close' when the binary
+    // is missing. Without this listener Node throws an uncaught exception, which is
+    // exactly what happens when `secret-tool`/`security`/`claude` is not installed.
+    const fail = (error: NodeJS.ErrnoException) => {
+      if (!options?.quiet) {
+        process.stderr.write(`  ${error.message}\n`);
+      }
+      resolve({ code: error.code === "ENOENT" ? 127 : 1, stdout: "", stderr: error.message });
+    };
+
     if (options?.interactive) {
       const child = spawn(command, args, {
         env: { ...process.env, ...options.env },
         stdio: "inherit",
       });
+      child.on("error", fail);
       child.on("close", (code) => resolve({ code: code ?? 1, stdout: "", stderr: "" }));
       return;
     }
@@ -116,6 +109,7 @@ async function execCommand(
       }
     });
 
+    child.on("error", fail);
     child.on("close", (code) => {
       resolve({ code: code ?? 1, stdout, stderr });
     });
@@ -398,7 +392,7 @@ export async function syncPluginsJson(configDir: string, primarySource: string):
       };
     }
 
-    await writeJson(knownPath, syncedKnown);
+    await writeJsonIfChanged(knownPath, syncedKnown);
 
     // Sync installed_plugins.json (v2 format: { version, plugins: { name: [entries] } })
     const installedPath = path.join(configDir, "plugins", "installed_plugins.json");
@@ -432,7 +426,7 @@ export async function syncPluginsJson(configDir: string, primarySource: string):
       }
     }
 
-    await writeJson(installedPath, { version: installedJson.version ?? 2, plugins: syncedPlugins });
+    await writeJsonIfChanged(installedPath, { version: installedJson.version ?? 2, plugins: syncedPlugins });
   } catch {
     // Never block Claude from launching
   }
@@ -627,7 +621,31 @@ export async function loadRegistry() {
 }
 
 export async function saveRegistry(registry: Registry) {
-  await writeJson(REGISTRY_PATH, registry);
+  await withFileLock(REGISTRY_PATH, () => writeJson(REGISTRY_PATH, registry));
+  await writeActiveConfig(registry).catch(() => {});
+}
+
+/**
+ * Resolve the active profile to the single value the shell wrapper needs: either
+ * `__PRIMARY__` (let Claude Code use its default `~/.claude`) or the profile's
+ * config dir. A stale or unwritable cache is harmless — the wrapper falls back to
+ * reading profiles.json itself.
+ */
+async function writeActiveConfig(registry: Registry) {
+  const profile = registry.profiles[registry.activeProfile];
+  if (!profile) {
+    await rm(ACTIVE_CONFIG_PATH, { force: true }).catch(() => {});
+    return;
+  }
+
+  let value = profile.configDir;
+  const resolved = await realpath(profile.configDir).catch(() => profile.configDir);
+  const resolvedPrimary = await realpath(PRIMARY_SOURCE).catch(() => PRIMARY_SOURCE);
+  if (profile.isPrimary || resolved === resolvedPrimary) {
+    value = "__PRIMARY__";
+  }
+
+  await atomicWrite(ACTIVE_CONFIG_PATH, `${value}\n`);
 }
 
 export async function loadUsageStore() {
@@ -678,8 +696,16 @@ export async function initializeRegistry(options: {
   }
 
   await saveRegistry(registry);
-  // Reset usage on init — fresh start with seeded fingerprints
-  await writeJson(USAGE_PATH, {});
+
+  // Preserve usage history for profiles that already existed. Re-running `init` must
+  // not wipe the cost/token totals the user has accumulated; only fingerprints for
+  // newly discovered accounts are seeded below.
+  const existingUsage = await readJson<UsageStore>(USAGE_PATH, {});
+  const preservedUsage: UsageStore = {};
+  for (const name of Object.keys(registry.profiles)) {
+    if (existingUsage[name]) preservedUsage[name] = existingUsage[name];
+  }
+  await writeJson(USAGE_PATH, preservedUsage);
 
   // Seed seenSessions so pre-existing usage is not recorded as new
   for (const account of options.accounts) {
@@ -701,6 +727,7 @@ export async function listProfiles(): Promise<ProfileListItem[]> {
 
   return Object.entries(registry.profiles).map(([name, profile]) => {
     const records = usage[name]?.records ?? [];
+    const totals = summarizeUsagePeriods({ now, records });
     return {
       name,
       email: profile.email,
@@ -709,10 +736,10 @@ export async function listProfiles(): Promise<ProfileListItem[]> {
       isPrimary: Boolean(profile.isPrimary),
       isActive: registry.activeProfile === name,
       mergeSessions: profile.mergeSessions,
-      today: summarizeUsage({ now, period: "today", records }),
-      week: summarizeUsage({ now, period: "week", records }),
-      month: summarizeUsage({ now, period: "month", records }),
-      total: summarizeUsage({ now, period: "all", records }),
+      today: totals.today,
+      week: totals.week,
+      month: totals.month,
+      total: totals.all,
     };
   });
 }
@@ -735,9 +762,10 @@ export async function getCurrentProfile() {
   }
 
   const profile = registry.profiles[registry.activeProfile];
-  const now = new Date().toISOString(); // summarizeUsage interprets cutoffs in the runtime's local timezone
+  const now = new Date().toISOString(); // usage cutoffs are interpreted in the runtime's local timezone
   const usage = await loadUsageStore();
   const records = usage[registry.activeProfile]?.records ?? [];
+  const totals = summarizeUsagePeriods({ now, records });
   const resolvedConfigDir = await realpath(profile.configDir).catch(() => profile.configDir);
   const keychainService = keychainServiceForConfigDir({
     homeDir: homedir(),
@@ -750,8 +778,8 @@ export async function getCurrentProfile() {
     keychainService,
     hasKeychain: await checkKeychain(keychainService, resolvedConfigDir),
     usage: {
-      today: summarizeUsage({ now, period: "today", records }),
-      total: summarizeUsage({ now, period: "all", records }),
+      today: totals.today,
+      total: totals.all,
     },
   };
 }
@@ -1067,7 +1095,24 @@ export async function updateProfileConfig(name: string, options: { mergeSessions
   return { name, mergeSessions: next, changed: true };
 }
 
+const RESERVED_PROFILE_NAMES = new Set([".", ".."]);
+
+export function validateProfileName(name: string): string | null {
+  if (!name || name.length > 64) {
+    return "Profile name must be 1–64 characters.";
+  }
+  if (RESERVED_PROFILE_NAMES.has(name) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+    return "Profile name may only contain letters, digits, '.', '_' and '-', and must start with a letter or digit.";
+  }
+  return null;
+}
+
 export async function addProfile(options: { name: string; fromPath?: string; mergeSessions?: boolean }) {
+  const invalidName = validateProfileName(options.name);
+  if (invalidName) {
+    throw new Error(invalidName);
+  }
+
   const registry = await loadRegistry();
   if (!registry) {
     throw new Error("clausona is not initialized.");
@@ -1079,6 +1124,11 @@ export async function addProfile(options: { name: string; fromPath?: string; mer
 
   if (options.fromPath) {
     const configDir = options.fromPath.replace(/^~(?=$|\/)/, homedir());
+    const resolvedFrom = await realpath(configDir).catch(() => configDir);
+    const resolvedPrimary = await realpath(PRIMARY_SOURCE).catch(() => PRIMARY_SOURCE);
+    if (resolvedFrom === resolvedPrimary) {
+      throw new Error("Cannot add the primary ~/.claude as a separate profile.");
+    }
     const jsonPath = claudeJsonPathForConfigDir({ homeDir: homedir(), configDir });
     const claudeJson = await parseClaudeJson(jsonPath);
     const email = claudeJson?.oauthAccount?.emailAddress;
@@ -1240,6 +1290,16 @@ export async function removeProfile(name: string) {
 
   await cleanupProfile(name, profile);
 
+  // Drop the profile's usage history too; leaving it behind would make it
+  // reappear if a profile with the same name is added later.
+  await withFileLock(USAGE_PATH, async () => {
+    const usage = await readJson<UsageStore>(USAGE_PATH, {});
+    if (usage[name]) {
+      delete usage[name];
+      await writeJson(USAGE_PATH, usage);
+    }
+  });
+
   delete registry.profiles[name];
   if (registry.activeProfile === name) {
     registry.activeProfile = Object.keys(registry.profiles)[0] ?? "";
@@ -1299,7 +1359,7 @@ export async function uninstallClausona() {
         .filter((line) => !line.includes("clausona shell-init"))
         .join("\n");
       if (filtered !== content) {
-        await writeFile(rcFile, filtered, "utf8");
+        await atomicWrite(rcFile, filtered);
         removed.push(`shell-init: ${rcFile}`);
       }
     } catch {
