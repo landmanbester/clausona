@@ -86,8 +86,10 @@ Once a release is published on the repo, colleagues can install without cloning:
 curl -fsSL https://raw.githubusercontent.com/landmanbester/clausona/main/install.sh | bash
 ```
 
-> If the fork has no release yet, the remote installer will tell you to build from
-> source — use the clone-and-`./install.sh` flow above in that case.
+The installer downloads the newest published release (`latest`, currently
+`v0.0.4-beta`). Pin a tag with `./install.sh v0.0.4-beta`, or point at another fork with
+`--repo <owner/repo>`. If the download fails (no release, private repo), use the
+clone-and-`./install.sh --local` flow above.
 
 #### Installer options
 
@@ -335,12 +337,17 @@ Tests are colocated next to the code as `*.test.ts` / `*.test.tsx`.
 
 ### Cutting a release
 
-The release workflow runs on tags matching `v*`:
+The release workflow runs on tags matching `v*`. Bump the version in `package.json`,
+commit it, then push the matching tag (the current release is `v0.0.4-beta`):
 
 ```bash
-# bump the version in package.json first
-git tag v0.0.4-beta
-git push origin v0.0.4-beta
+# 1. bump "version" in package.json to the same value as the tag, then:
+git commit -am "chore: release 0.0.5-beta"
+git push origin main
+
+# 2. tag and push — this triggers .github/workflows/release.yml
+git tag v0.0.5-beta
+git push origin v0.0.5-beta
 ```
 
 CI builds, tests, and uploads `clausona.js` plus `install.sh` to the GitHub release.
